@@ -1,0 +1,46 @@
+name: folio_pdf
+description: "Folio PDF - a free, ad-free PDF viewer and editor for Android and Windows."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.47.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # PDF rendering, text search, thumbnails, page manipulation (PDFium, MIT license)
+  pdfrx: ^2.6.5
+  # Material widgets (pdfrx 2.5+ uses the standalone material_ui package)
+  material_ui: ^1.0.0
+  # Native "Open file" dialog on Android and Windows
+  file_selector: ^1.1.0
+  # Stores the recent files list
+  shared_preferences: ^2.5.0
+  # Android: export/share saved PDFs (Android apps can't write anywhere they like)
+  share_plus: ^13.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # Generates the app icon for Android and Windows: dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+  android: true
+  # Android adaptive icon: the PDF icon on the app's dark background
+  adaptive_icon_background: "#121212"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  adaptive_icon_foreground_inset: 12
+  min_sdk_android: 21
+  ios: false
+  windows:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    icon_size: 256

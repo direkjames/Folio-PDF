@@ -1,0 +1,24 @@
+<!--
+  "Open with Folio PDF" + "Share → Folio PDF"
+
+  Paste these two <intent-filter> blocks into
+  android/app/src/main/AndroidManifest.xml, INSIDE the <activity android:name=".MainActivity" ...> tag,
+  right after the existing <intent-filter> that has android.intent.action.MAIN.
+-->
+
+<!-- Tap a PDF in Files / Gmail / Messenger → "Open with Folio PDF" -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="content" />
+    <data android:scheme="file" />
+    <data android:mimeType="application/pdf" />
+</intent-filter>
+
+<!-- Share a PDF → "Folio PDF" -->
+<intent-filter>
+    <action android:name="android.intent.action.SEND" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="application/pdf" />
+</intent-filter>
