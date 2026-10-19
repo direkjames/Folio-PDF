@@ -1,15 +1,15 @@
 import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' show FontFeature;
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../design/components.dart';
 import '../services/file_opener.dart';
 import '../services/pdf_saver.dart';
 import '../services/recent_files.dart';
+import '../services/settings.dart';
+import '../services/unsaved_changes.dart';
 import '../theme.dart';
 import '../widgets/password_dialog.dart';
 import '../widgets/reading_filter.dart';
@@ -29,8 +29,7 @@ class ViewerScreen extends StatefulWidget {
 }
 
 class _ViewerScreenState extends State<ViewerScreen> {
-  static const _wideLayoutBreakpoint = 760.0;
-  static const _darkReadingKey = 'dark_reading';
+  static const _wideLayoutBreakpoint = Dim.wide;
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _controller = PdfViewerController();
@@ -58,7 +57,15 @@ class _ViewerScreenState extends State<ViewerScreen> {
   bool _busy = false;
   bool _showSearch = false;
   bool _showThumbnails = true; // used on wide screens only
-  bool _darkReading = false;
+  bool _chromeVisible = true; // phones hide the bars while reading
+
+  final _settings = SettingsStore.instance;
+  ReadingMode get _mode => _settings.readingMode;
+
+  void _setDirty(bool value) {
+    _dirty = value;
+    UnsavedChanges.hasUnsaved.value = value;
+  }
 
   @override
   void initState() {
@@ -67,14 +74,21 @@ class _ViewerScreenState extends State<ViewerScreen> {
     _name = widget.displayName ?? fileNameOf(widget.filePath);
     _openPage = RecentFilesStore.instance.find(_path)?.lastPage ?? 1;
     _currentPage = _openPage;
-    _loadDarkReading();
+    _settings.addListener(_onSettingsChanged);
     _loadFile();
   }
 
   @override
   void dispose() {
+    _settings.removeListener(_onSettingsChanged);
+    UnsavedChanges.hasUnsaved.value = false;
+    RecentFilesStore.instance.flush();
     _disposeSearcher();
     super.dispose();
+  }
+
+  void _onSettingsChanged() {
+    if (mounted) setState(() {});
   }
 
   // ---------------------------------------------------------------- loading
@@ -120,18 +134,6 @@ class _ViewerScreenState extends State<ViewerScreen> {
     _showSearch = false;
   }
 
-  Future<void> _loadDarkReading() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() => _darkReading = prefs.getBool(_darkReadingKey) ?? false);
-  }
-
-  Future<void> _toggleDarkReading() async {
-    setState(() => _darkReading = !_darkReading);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_darkReadingKey, _darkReading);
-  }
-
   // ---------------------------------------------------------------- navigation
 
   void _onSearchChanged() {
@@ -140,9 +142,15 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   void _onPageChanged(int? page) {
     if (page == null || page == _currentPage) return;
-    setState(() => _currentPage = page);
+    setState(() {
+      _currentPage = page;
+      // Reading on a phone: get the bars out of the way.
+      if (_chromeVisible && !_showSearch && _isPhone) _chromeVisible = false;
+    });
     if (!_dirty) RecentFilesStore.instance.updateProgress(_path, lastPage: page);
   }
+
+  bool get _isPhone => MediaQuery.sizeOf(context).width < _wideLayoutBreakpoint;
 
   void _goToPage(int page) {
     if (!_controller.isReady) return;
@@ -169,7 +177,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
   }
 
   void _openSearch() {
-    if (_searcher != null) setState(() => _showSearch = true);
+    if (_searcher != null) {
+      setState(() {
+        _showSearch = true;
+        _chromeVisible = true;
+      });
+    }
   }
 
   void _closeSearch() {
@@ -206,6 +219,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
         ],
       ),
     );
+    input.dispose();
     if (page != null) _goToPage(page);
   }
 
@@ -220,7 +234,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
       ),
     );
     if (result == null || !mounted) return;
-    _dirty = true;
+    _setDirty(true);
     _showBytes(result.bytes, page: _currentPage.clamp(1, result.pageCount));
     _snack('Pages updated. Save to keep the changes.');
   }
@@ -236,7 +250,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
     try {
       await PdfSaver.writeTo(_path, bytes);
       if (!mounted) return true;
-      setState(() => _dirty = false);
+      setState(() => _setDirty(false));
       await RecentFilesStore.instance.updateProgress(_path, lastPage: _currentPage, pageCount: _pageCount);
       if (PdfSaver.canChooseSaveLocation) {
         _snack('Saved.');
@@ -269,7 +283,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
       setState(() {
         _path = newPath;
         _name = fileNameOf(newPath);
-        _dirty = false;
+        _setDirty(false);
       });
       await RecentFilesStore.instance.touch(newPath, _name);
       await RecentFilesStore.instance.updateProgress(newPath, lastPage: _currentPage, pageCount: _pageCount);
@@ -313,17 +327,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   void _snack(String message, {(String, VoidCallback)? action}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          duration: Duration(seconds: action == null ? 3 : 6),
-          action: action == null
-              ? null
-              : SnackBarAction(label: action.$1, textColor: AppColors.accent, onPressed: action.$2),
-        ),
-      );
+    showToast(context, message, actionLabel: action?.$1, onAction: action?.$2);
   }
 
   // ---------------------------------------------------------------- UI
@@ -332,13 +336,14 @@ class _ViewerScreenState extends State<ViewerScreen> {
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= _wideLayoutBreakpoint;
     final docRef = _docRef;
+    final p = context.pal;
 
     final thumbnails = docRef == null
         ? const SizedBox()
         : ThumbnailsPanel(
             documentRef: docRef,
             currentPage: _currentPage,
-            darkReading: _darkReading,
+            mode: _mode,
             onPageSelected: (page) {
               _goToPage(page);
               if (!wide) Navigator.of(context).maybePop(); // close the drawer
@@ -366,176 +371,391 @@ class _ViewerScreenState extends State<ViewerScreen> {
         },
         child: Scaffold(
           key: _scaffoldKey,
-          drawer: wide || docRef == null ? null : Drawer(width: 200, child: SafeArea(child: thumbnails)),
-          appBar: _buildAppBar(wide),
+          backgroundColor: p.background,
+          drawer: wide || docRef == null
+              ? null
+              : Drawer(
+                  width: 224,
+                  backgroundColor: p.surface,
+                  child: SafeArea(child: thumbnails),
+                ),
           body: _buildBody(wide, thumbnails),
         ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar(bool wide) {
-    final ready = _bytes != null && !_busy;
-    return AppBar(
-      titleSpacing: 0,
-      title: Row(
+  Widget _buildBody(bool wide, Widget thumbnails) {
+    final p = context.pal;
+    if (_openError != null) {
+      return Column(
         children: [
-          if (_dirty)
-            const Padding(
-              padding: EdgeInsets.only(right: 8),
-              child: Tooltip(
-                message: 'Unsaved changes',
-                child: CircleAvatar(radius: 4, backgroundColor: AppColors.accent),
+          SafeArea(bottom: false, child: _buildTopBar(wide)),
+          Expanded(child: _ErrorView(message: 'This file could not be read.', details: _openError!)),
+        ],
+      );
+    }
+
+    final reader = Stack(
+      children: [
+        Positioned.fill(
+          child: _docRef == null
+              ? const Center(child: CircularProgressIndicator())
+              : ReadingFilter(mode: _mode, child: _buildViewer(_docRef!)),
+        ),
+        if (_docRef != null)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Center(
+                  child: AnimatedSlide(
+                    duration: Dim.normal,
+                    curve: Dim.curve,
+                    offset: _chromeVisible || wide ? Offset.zero : const Offset(0, 1.6),
+                    child: AnimatedOpacity(
+                      duration: Dim.normal,
+                      opacity: _chromeVisible || wide ? 1 : 0,
+                      child: IgnorePointer(ignoring: !_chromeVisible && !wide, child: _buildDock(wide)),
+                    ),
+                  ),
+                ),
               ),
             ),
-          Expanded(child: Text(_name, maxLines: 1, overflow: TextOverflow.ellipsis)),
-        ],
-      ),
-      actions: [
-        IconButton(
-          tooltip: 'Pages',
-          onPressed: ready ? () => _toggleThumbnails(wide) : null,
-          icon: Icon(Icons.view_sidebar_outlined, color: wide && _showThumbnails ? AppColors.accent : null),
-        ),
-        IconButton(
-          tooltip: 'Find (Ctrl+F)',
-          onPressed: _searcher == null ? null : (_showSearch ? _closeSearch : _openSearch),
-          icon: Icon(Icons.search_rounded, color: _showSearch ? AppColors.accent : null),
-        ),
-        IconButton(
-          tooltip: _darkReading ? 'Normal pages' : 'Dark pages',
-          onPressed: _toggleDarkReading,
-          icon: Icon(
-            _darkReading ? Icons.dark_mode_rounded : Icons.dark_mode_outlined,
-            color: _darkReading ? AppColors.accent : null,
           ),
-        ),
-        IconButton(
-          tooltip: 'Organize pages',
-          onPressed: ready ? _openOrganize : null,
-          icon: const Icon(Icons.auto_awesome_mosaic_outlined),
-        ),
-        IconButton(
-          tooltip: 'Save (Ctrl+S)',
-          onPressed: ready && _dirty ? _save : null,
-          icon: Icon(Icons.save_outlined, color: _dirty ? AppColors.accent : null),
-        ),
-        PopupMenuButton<String>(
-          tooltip: 'More',
-          onSelected: (v) {
-            switch (v) {
-              case 'saveAs':
-                _saveAs();
-              case 'share':
-                _share();
-              case 'goto':
-                _showGoToPageDialog();
-              case 'fitWidth':
-                _fitWidth();
-              case 'fitPage':
-                _fitPage();
-              case 'first':
-                _goToPage(1);
-              case 'last':
-                if (_controller.isReady) _goToPage(_controller.pageCount);
-              case 'help':
-                HelpScreen.open(context);
-            }
-          },
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'saveAs',
-              enabled: ready,
-              child: Text(PdfSaver.canChooseSaveLocation ? 'Save as…' : 'Export…'),
-            ),
-            if (!PdfSaver.canChooseSaveLocation)
-              PopupMenuItem(value: 'share', enabled: ready, child: const Text('Share')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'goto', child: Text('Go to page…')),
-            const PopupMenuItem(value: 'fitWidth', child: Text('Fit width')),
-            const PopupMenuItem(value: 'fitPage', child: Text('Fit page')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'first', child: Text('First page')),
-            const PopupMenuItem(value: 'last', child: Text('Last page')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'help', child: Text('How to use')),
-          ],
-        ),
-        const SizedBox(width: 4),
       ],
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(2),
-        child: _busy ? const LinearProgressIndicator(minHeight: 2) : const Divider(height: 2),
-      ),
     );
-  }
 
-  Widget _buildBody(bool wide, Widget thumbnails) {
-    if (_openError != null) {
-      return _ErrorView(message: 'This file could not be read.', details: _openError!);
-    }
-    if (_docRef == null) return const Center(child: CircularProgressIndicator());
-
-    return Column(
-      children: [
-        if (_showSearch && _searcher != null) PdfSearchBar(searcher: _searcher!, onClose: _closeSearch),
-        Expanded(
-          child: Row(
-            children: [
-              if (wide)
+    if (wide) {
+      return Column(
+        children: [
+          SafeArea(bottom: false, child: _buildTopBar(wide)),
+          if (_showSearch && _searcher != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+              child: Align(alignment: Alignment.centerRight, child: PdfSearchBar(searcher: _searcher!, onClose: _closeSearch)),
+            ),
+          Expanded(
+            child: Row(
+              children: [
                 AnimatedSize(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
+                  duration: Dim.normal,
+                  curve: Dim.curve,
                   child: SizedBox(
-                    width: _showThumbnails ? 180 : 0,
-                    child: _showThumbnails
+                    width: _showThumbnails && _docRef != null ? 188 : 0,
+                    child: _showThumbnails && _docRef != null
                         ? DecoratedBox(
-                            decoration: const BoxDecoration(
-                              border: Border(right: BorderSide(color: AppColors.border)),
-                            ),
+                            decoration: BoxDecoration(border: Border(right: BorderSide(color: p.border))),
                             child: thumbnails,
                           )
                         : null,
                   ),
                 ),
-              Expanded(
-                child: Stack(
+                Expanded(child: reader),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Phones: the bars float over the page and slide away while reading.
+    return Stack(
+      children: [
+        Positioned.fill(child: reader),
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: AnimatedSlide(
+            duration: Dim.normal,
+            curve: Dim.curve,
+            offset: _chromeVisible ? Offset.zero : const Offset(0, -1.2),
+            child: AnimatedOpacity(
+              duration: Dim.normal,
+              opacity: _chromeVisible ? 1 : 0,
+              child: IgnorePointer(
+                ignoring: !_chromeVisible,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    ReadingFilter(enabled: _darkReading, child: _buildViewer(_docRef!)),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 16,
-                      child: Center(child: _buildBottomPill()),
-                    ),
+                    _buildTopBar(wide),
+                    if (_showSearch && _searcher != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                        child: PdfSearchBar(searcher: _searcher!, onClose: _closeSearch),
+                      ),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ],
     );
   }
 
+  // ---- actions shared by the menu on both layouts
+
+  List<List<SheetAction<String>>> _menuActions(bool wide) {
+    final ready = _bytes != null && !_busy;
+    return [
+      [
+        if (!wide) SheetAction(value: 'pages', icon: Icons.view_sidebar_outlined, label: 'Page thumbnails', enabled: ready),
+        SheetAction(
+          value: 'saveAs',
+          icon: PdfSaver.canChooseSaveLocation ? Icons.save_as_outlined : Icons.ios_share_rounded,
+          label: PdfSaver.canChooseSaveLocation ? 'Save as…' : 'Export…',
+          enabled: ready,
+        ),
+        if (!PdfSaver.canChooseSaveLocation)
+          SheetAction(value: 'share', icon: Icons.share_outlined, label: 'Share', enabled: ready),
+      ],
+      [
+        const SheetAction(value: 'goto', icon: Icons.input_rounded, label: 'Go to page…'),
+        const SheetAction(value: 'fitWidth', icon: Icons.width_normal_outlined, label: 'Fit width'),
+        const SheetAction(value: 'fitPage', icon: Icons.fit_screen_outlined, label: 'Fit page'),
+        const SheetAction(value: 'first', icon: Icons.first_page_rounded, label: 'First page'),
+        const SheetAction(value: 'last', icon: Icons.last_page_rounded, label: 'Last page'),
+      ],
+      [const SheetAction(value: 'help', icon: Icons.help_outline_rounded, label: 'How to use')],
+    ];
+  }
+
+  void _onMenuChoice(String v, bool wide) {
+    switch (v) {
+      case 'pages':
+        _toggleThumbnails(wide);
+      case 'saveAs':
+        _saveAs();
+      case 'share':
+        _share();
+      case 'goto':
+        _showGoToPageDialog();
+      case 'fitWidth':
+        _fitWidth();
+      case 'fitPage':
+        _fitPage();
+      case 'first':
+        _goToPage(1);
+      case 'last':
+        if (_controller.isReady) _goToPage(_controller.pageCount);
+      case 'help':
+        HelpScreen.open(context);
+    }
+  }
+
+  Future<void> _openMenuSheet(bool wide) async {
+    final choice = await showActionSheet<String>(context, _menuActions(wide));
+    if (choice != null) _onMenuChoice(choice, wide);
+  }
+
+  Widget _buildMoreButton(bool wide) {
+    final p = context.pal;
+    if (!wide) {
+      return FolioIconButton(icon: Icons.more_horiz_rounded, tooltip: 'More', onPressed: () => _openMenuSheet(wide));
+    }
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      offset: const Offset(0, 46),
+      onSelected: (v) => _onMenuChoice(v, wide),
+      child: Container(
+        width: 42,
+        height: 42,
+        alignment: Alignment.center,
+        child: Icon(Icons.more_horiz_rounded, color: p.textPrimary),
+      ),
+      itemBuilder: (context) => [
+        for (var g = 0; g < _menuActions(wide).length; g++) ...[
+          if (g > 0) const PopupMenuDivider(),
+          for (final a in _menuActions(wide)[g])
+            PopupMenuItem<String>(
+              value: a.value,
+              enabled: a.enabled,
+              child: Row(children: [Icon(a.icon, size: 19, color: p.textSecondary), const SizedBox(width: 12), Text(a.label)]),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildReadingModeButton() {
+    final p = context.pal;
+    final icon = switch (_mode) {
+      ReadingMode.normal => Icons.description_outlined,
+      ReadingMode.sepia => Icons.auto_stories_outlined,
+      ReadingMode.dark => Icons.nights_stay_rounded,
+    };
+    return PopupMenuButton<ReadingMode>(
+      tooltip: 'Page style',
+      offset: const Offset(0, -150),
+      onSelected: _settings.setReadingMode,
+      child: Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          color: _mode == ReadingMode.normal ? Colors.transparent : p.accent.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(13),
+        ),
+        child: Icon(icon, color: _mode == ReadingMode.normal ? p.textPrimary : p.accentText, size: 22),
+      ),
+      itemBuilder: (context) => [
+        for (final (m, icon, label) in const [
+          (ReadingMode.normal, Icons.description_outlined, 'Normal'),
+          (ReadingMode.sepia, Icons.auto_stories_outlined, 'Sepia'),
+          (ReadingMode.dark, Icons.nights_stay_rounded, 'Dark pages'),
+        ])
+          PopupMenuItem<ReadingMode>(
+            value: m,
+            child: Row(
+              children: [
+                Icon(icon, size: 19, color: m == _mode ? p.accentText : p.textSecondary),
+                const SizedBox(width: 12),
+                Expanded(child: Text(label, style: TextStyle(fontWeight: m == _mode ? FontWeight.w700 : FontWeight.w500))),
+                if (m == _mode) Icon(Icons.check_rounded, size: 18, color: p.accentText),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTopBar(bool wide) {
+    final p = context.pal;
+    final ready = _bytes != null && !_busy;
+    final progress = (_pageCount == null || _pageCount == 0) ? 0.0 : (_currentPage / _pageCount!).clamp(0.0, 1.0);
+
+    final bar = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SafeArea(
+          bottom: false,
+          child: SizedBox(
+            height: 58,
+            child: Row(
+              children: [
+                const SizedBox(width: 6),
+                FolioIconButton(
+                  icon: Icons.arrow_back_rounded,
+                  tooltip: 'Back',
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, letterSpacing: -0.2),
+                      ),
+                      Text(
+                        _dirty ? 'Unsaved changes' : (_pageCount == null ? 'Opening…' : '$_pageCount pages'),
+                        style: TextStyle(fontSize: 12, color: _dirty ? p.accentText : p.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                if (wide) ...[
+                  FolioIconButton(
+                    icon: Icons.view_sidebar_outlined,
+                    tooltip: 'Pages',
+                    active: _showThumbnails,
+                    onPressed: ready ? () => _toggleThumbnails(wide) : null,
+                  ),
+                  FolioIconButton(
+                    icon: Icons.search_rounded,
+                    tooltip: 'Find (Ctrl+F)',
+                    active: _showSearch,
+                    onPressed: _searcher == null ? null : (_showSearch ? _closeSearch : _openSearch),
+                  ),
+                  _buildReadingModeButton(),
+                ] else
+                  FolioIconButton(
+                    icon: Icons.search_rounded,
+                    tooltip: 'Find',
+                    active: _showSearch,
+                    onPressed: _searcher == null ? null : (_showSearch ? _closeSearch : _openSearch),
+                  ),
+                FolioIconButton(
+                  icon: Icons.auto_awesome_mosaic_outlined,
+                  tooltip: 'Organize pages',
+                  onPressed: ready ? _openOrganize : null,
+                ),
+                FolioIconButton(
+                  icon: _dirty ? Icons.save_rounded : Icons.save_outlined,
+                  tooltip: 'Save (Ctrl+S)',
+                  active: _dirty,
+                  onPressed: ready && _dirty ? _save : null,
+                ),
+                _buildMoreButton(wide),
+                const SizedBox(width: 6),
+              ],
+            ),
+          ),
+        ),
+        // Reading progress; becomes a busy indicator while saving.
+        SizedBox(
+          height: 2,
+          child: _busy
+              ? const LinearProgressIndicator(minHeight: 2)
+              : Align(
+                  alignment: Alignment.centerLeft,
+                  child: AnimatedFractionallySizedBox(
+                    duration: Dim.normal,
+                    curve: Dim.curve,
+                    widthFactor: progress,
+                    child: Container(decoration: BoxDecoration(gradient: p.accentGradient)),
+                  ),
+                ),
+        ),
+      ],
+    );
+
+    if (wide) {
+      return DecoratedBox(
+        decoration: BoxDecoration(color: p.background, border: Border(bottom: BorderSide(color: p.border))),
+        child: bar,
+      );
+    }
+    return GlassPanel(border: false, child: bar);
+  }
+
   Widget _buildViewer(PdfDocumentRef docRef) {
-    // Colors drawn inside the inverted area are pre-inverted so they show up as intended.
-    Color c(Color color) => ReadingFilter.preInvert(color, _darkReading);
+    final p = context.pal;
+    // Colors drawn inside the filtered area are pre-inverted so they show up as intended.
+    Color c(Color color) => ReadingFilter.preFilter(color, _mode);
 
     return PdfViewer(
       docRef,
       controller: _controller,
       initialPageNumber: _openPage,
       params: PdfViewerParams(
-        backgroundColor: c(AppColors.viewerBackdrop),
-        margin: 10,
-        pageDropShadow: null,
-        matchTextColor: c(AppColors.accent.withValues(alpha: 0.35)),
-        activeMatchTextColor: c(const Color(0xFFFF9F1A).withValues(alpha: 0.55)),
-        keyHandlerParams: PdfViewerKeyHandlerParams(autofocus: true),
-        sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(maxScale: 8),
+        backgroundColor: c(p.viewerBackdrop),
+        margin: 14,
+        pageDropShadow: BoxShadow(
+          color: c(Colors.black.withValues(alpha: p.isDark ? 0.55 : 0.22)),
+          blurRadius: 18,
+          offset: const Offset(0, 6),
+        ),
+        matchTextColor: c(p.accent.withValues(alpha: 0.4)),
+        activeMatchTextColor: c(const Color(0xFFFF9F1A).withValues(alpha: 0.6)),
+        keyHandlerParams: const PdfViewerKeyHandlerParams(autofocus: true),
+        sizeDelegateProvider: const PdfViewerSizeDelegateProviderLegacy(maxScale: 8),
         pagePaintCallbacks: [if (_searcher != null) _searcher!.pageTextMatchPaintCallback],
         onPageChanged: _onPageChanged,
+        onGeneralTap: (context, controller, details) {
+          if (details.type == PdfViewerGeneralTapType.tap && _isPhone) {
+            setState(() => _chromeVisible = !_chromeVisible);
+          }
+          return false;
+        },
         onViewerReady: (document, controller) {
           _passwordConfirmed = true;
           _searcher ??= PdfTextSearcher(controller)..addListener(_onSearchChanged);
@@ -554,10 +774,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
           PdfViewerScrollThumb(
             controller: _controller,
             orientation: ScrollbarOrientation.right,
-            thumbSize: const Size(6, 48),
+            thumbSize: const Size(6, 52),
             thumbBuilder: (context, thumbSize, pageNumber, controller) => Container(
               decoration: BoxDecoration(
-                color: c(AppColors.accent.withValues(alpha: 0.7)),
+                color: c(p.accent.withValues(alpha: 0.75)),
                 borderRadius: BorderRadius.circular(3),
               ),
             ),
@@ -567,62 +787,58 @@ class _ViewerScreenState extends State<ViewerScreen> {
     );
   }
 
-  Widget _buildBottomPill() {
-    return Material(
-      color: AppColors.surfaceHigh.withValues(alpha: 0.94),
-      elevation: 6,
-      shadowColor: Colors.black,
-      shape: const StadiumBorder(side: BorderSide(color: AppColors.border)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InkWell(
-              customBorder: const StadiumBorder(),
-              onTap: _showGoToPageDialog,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Text(
-                  _pageCount == null ? '–' : '$_currentPage / $_pageCount',
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontFeatures: [FontFeature.tabularFigures()]),
-                ),
+  Widget _buildDock(bool wide) {
+    final p = context.pal;
+    Widget divider() => Container(width: 1, height: 22, color: p.border, margin: const EdgeInsets.symmetric(horizontal: 2));
+
+    return GlassPanel(
+      borderRadius: BorderRadius.circular(30),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!wide) ...[
+            FolioIconButton(
+              icon: Icons.view_sidebar_outlined,
+              tooltip: 'Pages',
+              onPressed: _bytes == null ? null : () => _toggleThumbnails(wide),
+            ),
+            divider(),
+          ],
+          Pressable(
+            onTap: _showGoToPageDialog,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Text(
+                _pageCount == null ? '–' : '$_currentPage / $_pageCount',
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, fontFeatures: [FontFeature.tabularFigures()]),
               ),
             ),
-            Container(width: 1, height: 20, color: AppColors.border),
-            IconButton(
-              tooltip: 'Zoom out (Ctrl+-)',
-              visualDensity: VisualDensity.compact,
-              onPressed: _zoomOut,
-              icon: const Icon(Icons.remove_rounded, size: 20),
-            ),
-            ListenableBuilder(
-              // The controller notifies on every scroll/zoom change; only this label rebuilds.
-              listenable: _controller,
-              builder: (context, _) {
-                final zoom = _controller.isReady ? (_controller.currentZoom * 100).round() : null;
-                return InkWell(
-                  customBorder: const StadiumBorder(),
-                  onTap: _fitWidth,
-                  child: SizedBox(
-                    width: 52,
-                    child: Text(
-                      zoom == null ? '' : '$zoom%',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
-                    ),
+          ),
+          divider(),
+          FolioIconButton(icon: Icons.remove_rounded, tooltip: 'Zoom out (Ctrl+-)', size: 20, onPressed: _zoomOut),
+          ListenableBuilder(
+            // The controller notifies on every scroll/zoom change; only this label rebuilds.
+            listenable: _controller,
+            builder: (context, _) {
+              final zoom = _controller.isReady ? (_controller.currentZoom * 100).round() : null;
+              return Pressable(
+                onTap: _fitWidth,
+                child: SizedBox(
+                  width: 48,
+                  child: Text(
+                    zoom == null ? '' : '$zoom%',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: p.textSecondary, fontWeight: FontWeight.w600),
                   ),
-                );
-              },
-            ),
-            IconButton(
-              tooltip: 'Zoom in (Ctrl++)',
-              visualDensity: VisualDensity.compact,
-              onPressed: _zoomIn,
-              icon: const Icon(Icons.add_rounded, size: 20),
-            ),
-          ],
-        ),
+                ),
+              );
+            },
+          ),
+          FolioIconButton(icon: Icons.add_rounded, tooltip: 'Zoom in (Ctrl++)', size: 20, onPressed: _zoomIn),
+          if (!wide) ...[divider(), _buildReadingModeButton()],
+        ],
       ),
     );
   }
@@ -636,22 +852,39 @@ class _ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final p = context.pal;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline_rounded, size: 48, color: AppColors.accent),
-            const SizedBox(height: 12),
-            Text(message, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            Text(
-              details,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-            ),
-          ],
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 76,
+                height: 76,
+                decoration: BoxDecoration(shape: BoxShape.circle, color: p.danger.withValues(alpha: 0.12)),
+                child: Icon(Icons.error_outline_rounded, size: 36, color: p.danger),
+              ),
+              const SizedBox(height: 18),
+              Text(message, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              Text(
+                'The file may be damaged or not a real PDF.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: p.textSecondary, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                details,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: p.textSecondary.withValues(alpha: 0.7), fontSize: 11.5),
+              ),
+            ],
+          ),
         ),
       ),
     );

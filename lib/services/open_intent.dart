@@ -18,6 +18,12 @@ class OpenIntentService {
     }
   }
 
+  /// Stops listening (the screen that listened is gone).
+  static void stopListening() {
+    if (!Platform.isAndroid) return;
+    _channel.setMethodCallHandler(null);
+  }
+
   /// Called when a PDF is opened while Folio is already running.
   static void listen(void Function(String path) onFile) {
     if (!Platform.isAndroid) return;

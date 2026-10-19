@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,6 +6,7 @@ import 'package:file_selector/file_selector.dart' as fs;
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../design/components.dart';
 import '../services/file_opener.dart';
 import '../services/pdf_saver.dart';
 import '../theme.dart';
@@ -76,6 +78,12 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
   final _selected = <int>{}; // uids
   int _nextUid = 0;
   bool _busy = false;
+  final _scroll = ScrollController();
+  final _gridKey = GlobalKey();
+  int? _dragUid;
+  int? _hoverUid;
+  double _pointerY = 0;
+  Timer? _autoScroll;
   String? _loadError;
 
   bool get _hasChanges => _history.isNotEmpty;
@@ -88,6 +96,8 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
 
   @override
   void dispose() {
+    _autoScroll?.cancel();
+    _scroll.dispose();
     _baseDoc?.dispose();
     for (final d in _otherDocs) {
       d.dispose();
@@ -178,12 +188,42 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
     });
   }
 
-  void _reorder(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) newIndex -= 1;
-    if (newIndex == oldIndex) return;
+  /// Moves the page with [uid] so it ends up at [target] in the list.
+  void _moveTo(int uid, int target) {
+    final from = _items.indexWhere((p) => p.uid == uid);
+    if (from < 0 || target < 0 || target >= _items.length || from == target) return;
     _edit(() {
-      final item = _items.removeAt(oldIndex);
-      _items.insert(newIndex, item);
+      final item = _items.removeAt(from);
+      _items.insert(target, item);
+    });
+  }
+
+  // Scrolls the grid while a page is dragged near its top or bottom edge.
+  void _startAutoScroll() {
+    _autoScroll?.cancel();
+    _autoScroll = Timer.periodic(const Duration(milliseconds: 16), (_) {
+      final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !_scroll.hasClients) return;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final y = _pointerY - top;
+      const edge = 90.0;
+      var delta = 0.0;
+      if (y < edge) {
+        delta = -(edge - y) / edge * 14;
+      } else if (y > box.size.height - edge) {
+        delta = (y - (box.size.height - edge)) / edge * 14;
+      }
+      if (delta == 0) return;
+      final pos = _scroll.position;
+      _scroll.jumpTo((pos.pixels + delta).clamp(0.0, pos.maxScrollExtent));
+    });
+  }
+
+  void _stopDrag() {
+    _autoScroll?.cancel();
+    setState(() {
+      _dragUid = null;
+      _hoverUid = null;
     });
   }
 
@@ -344,13 +384,12 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    showToast(context, message);
   }
 
   @override
   Widget build(BuildContext context) {
+    final p = context.pal;
     return PopScope(
       canPop: !_hasChanges,
       onPopInvokedWithResult: (didPop, result) async {
@@ -362,23 +401,41 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Organize pages'),
+          titleSpacing: 0,
+          leading: FolioIconButton(
+            icon: Icons.arrow_back_rounded,
+            tooltip: 'Back',
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Organize pages', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              Text('${_items.length} pages', style: TextStyle(fontSize: 12, color: p.textSecondary, fontWeight: FontWeight.w400)),
+            ],
+          ),
           actions: [
-            IconButton(
+            FolioIconButton(
+              icon: Icons.undo_rounded,
               tooltip: 'Undo',
               onPressed: _history.isEmpty || _busy ? null : _undo,
-              icon: const Icon(Icons.undo_rounded),
             ),
+            const SizedBox(width: 6),
             Padding(
-              padding: const EdgeInsets.only(right: 12, left: 4),
-              child: FilledButton(
-                style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10)),
-                onPressed: _baseDoc == null || _busy ? null : _done,
-                child: const Text('Done'),
+              padding: const EdgeInsets.only(right: 14),
+              child: Center(
+                child: GoldButton(
+                  label: 'Done',
+                  compact: true,
+                  onPressed: _baseDoc == null || _busy ? null : _done,
+                ),
               ),
             ),
           ],
-          bottom: const PreferredSize(preferredSize: Size.fromHeight(1), child: Divider()),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(2),
+            child: _busy ? const LinearProgressIndicator(minHeight: 2) : const Divider(height: 2),
+          ),
         ),
         body: _buildBody(),
       ),
@@ -386,25 +443,58 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
   }
 
   Widget _buildBody() {
+    final p = context.pal;
     if (_loadError != null) {
       return Center(child: Text('Could not open pages.\n$_loadError', textAlign: TextAlign.center));
     }
     if (_baseDoc == null) return const Center(child: CircularProgressIndicator());
 
-    return Column(
+    return Stack(
       children: [
-        _buildToolbar(),
-        if (_busy) const LinearProgressIndicator(minHeight: 2) else const SizedBox(height: 2),
-        Expanded(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: ReorderableListView.builder(
-                buildDefaultDragHandles: false,
-                padding: const EdgeInsets.fromLTRB(8, 8, 8, 24),
-                itemCount: _items.length,
-                onReorder: _reorder,
-                itemBuilder: (context, index) => _buildRow(index),
+        Column(
+          children: [
+            _buildToolbar(),
+            Expanded(
+              child: Listener(
+                onPointerMove: (e) => _pointerY = e.position.dy,
+                onPointerDown: (e) => _pointerY = e.position.dy,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1000),
+                    child: GridView.builder(
+                      key: _gridKey,
+                      controller: _scroll,
+                      padding: EdgeInsets.fromLTRB(20, 8, 20, _selected.isEmpty ? 32 : 110),
+                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 190,
+                        mainAxisSpacing: 16,
+                        crossAxisSpacing: 16,
+                        childAspectRatio: 0.66,
+                      ),
+                      itemCount: _items.length,
+                      itemBuilder: (context, index) => _buildTile(index),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16,
+          child: SafeArea(
+            child: Center(
+              child: AnimatedSlide(
+                duration: Dim.normal,
+                curve: Dim.curve,
+                offset: _selected.isEmpty ? const Offset(0, 1.8) : Offset.zero,
+                child: AnimatedOpacity(
+                  duration: Dim.normal,
+                  opacity: _selected.isEmpty ? 0 : 1,
+                  child: IgnorePointer(ignoring: _selected.isEmpty, child: _buildSelectionBar(p)),
+                ),
               ),
             ),
           ),
@@ -414,148 +504,306 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
   }
 
   Widget _buildToolbar() {
-    final n = _selected.length;
-    final hasSel = n > 0;
-    return Material(
-      color: AppColors.surface,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Row(
-          children: [
-            TextButton.icon(
-              onPressed: _busy ? null : _selectAll,
-              icon: Icon(
-                _selected.length == _items.length ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
-                size: 20,
+    final p = context.pal;
+    final all = _selected.length == _items.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: Row(
+        children: [
+          Pressable(
+            onTap: _busy ? null : _selectAll,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: p.surfaceHigh,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: all ? p.accent : p.border),
               ),
-              label: Text(hasSel ? '$n selected' : 'Select all'),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    all ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                    size: 19,
+                    color: all ? p.accentText : p.textSecondary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _selected.isEmpty ? 'Select all' : '${_selected.length} selected',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                  ),
+                ],
+              ),
             ),
-            const Spacer(),
-            if (hasSel) ...[
-              IconButton(
-                tooltip: 'Rotate left',
-                onPressed: _busy ? null : () => _rotate(Set.of(_selected), clockwise: false),
-                icon: const Icon(Icons.rotate_left_rounded),
+          ),
+          const Spacer(),
+          Pressable(
+            onTap: _busy ? null : _addPdfs,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: p.accent.withValues(alpha: 0.13),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: p.accent.withValues(alpha: 0.4)),
               ),
-              IconButton(
-                tooltip: 'Rotate right',
-                onPressed: _busy ? null : () => _rotate(Set.of(_selected), clockwise: true),
-                icon: const Icon(Icons.rotate_right_rounded),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.note_add_outlined, size: 19, color: p.accentText),
+                  const SizedBox(width: 8),
+                  Text('Add PDF', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5, color: p.accentText)),
+                ],
               ),
-              IconButton(
-                tooltip: 'Delete',
-                onPressed: _busy ? null : () => _delete(Set.of(_selected)),
-                icon: const Icon(Icons.delete_outline_rounded),
-              ),
-              IconButton(
-                tooltip: PdfSaver.canChooseSaveLocation ? 'Save selected as new PDF' : 'Share selected as new PDF',
-                onPressed: _busy ? null : _extractSelected,
-                icon: const Icon(Icons.call_split_rounded),
-              ),
-            ] else
-              TextButton.icon(
-                onPressed: _busy ? null : _addPdfs,
-                icon: const Icon(Icons.add_rounded, size: 20),
-                label: const Text('Add PDF'),
-              ),
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildRow(int index) {
+  Widget _buildSelectionBar(FolioPalette p) {
+    final sel = Set.of(_selected);
+    return GlassPanel(
+      borderRadius: BorderRadius.circular(28),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FolioIconButton(
+            icon: Icons.close_rounded,
+            tooltip: 'Clear selection',
+            onPressed: () => setState(_selected.clear),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text('${sel.length}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          ),
+          Container(width: 1, height: 22, color: p.border, margin: const EdgeInsets.symmetric(horizontal: 4)),
+          FolioIconButton(
+            icon: Icons.rotate_left_rounded,
+            tooltip: 'Rotate left',
+            onPressed: _busy ? null : () => _rotate(sel, clockwise: false),
+          ),
+          FolioIconButton(
+            icon: Icons.rotate_right_rounded,
+            tooltip: 'Rotate right',
+            onPressed: _busy ? null : () => _rotate(sel, clockwise: true),
+          ),
+          FolioIconButton(
+            icon: Icons.delete_outline_rounded,
+            tooltip: 'Delete',
+            onPressed: _busy ? null : () => _delete(sel),
+          ),
+          FolioIconButton(
+            icon: Icons.call_split_rounded,
+            tooltip: PdfSaver.canChooseSaveLocation ? 'Save selected as new PDF' : 'Share selected as new PDF',
+            onPressed: _busy ? null : _extractSelected,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTile(int index) {
+    final p = context.pal;
     final item = _items[index];
     final selected = _selected.contains(item.uid);
     final rotatedBy = (item.rotation.index - item.page.rotation.index + 4) % 4 * 90;
-    final details = [
-      if (item.fromOtherFile) 'from ${item.sourceName} · p.${item.pageNumber}' else 'original p.${item.pageNumber}',
-      if (rotatedBy != 0) 'rotated $rotatedBy°',
-    ].join(' · ');
+    final hovered = _hoverUid == item.uid && _dragUid != item.uid;
 
-    return Padding(
-      key: ValueKey(item.uid),
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Material(
-        color: selected ? AppColors.accent.withValues(alpha: 0.10) : AppColors.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: selected ? AppColors.accent : AppColors.border),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => _toggleSelect(item.uid),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
-            child: Row(
-              children: [
-                Checkbox(value: selected, onChanged: (_) => _toggleSelect(item.uid)),
-                SizedBox(
-                  width: 64,
-                  height: 84,
-                  child: PdfPageView(
-                    key: ValueKey('org_${item.uid}_${item.rotation.index}'),
-                    document: item.doc,
-                    pageNumber: item.pageNumber,
-                    rotationOverride: item.rotation,
-                    maximumDpi: 48,
-                    alignment: Alignment.center,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Page ${index + 1}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 2),
-                      Text(
-                        details,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: item.fromOtherFile ? AppColors.accent : AppColors.textSecondary,
+    Widget card({bool floating = false}) => Container(
+          decoration: BoxDecoration(
+            gradient: selected ? null : p.cardGradient,
+            color: selected ? p.accent.withValues(alpha: 0.12) : null,
+            borderRadius: BorderRadius.circular(Dim.rMd),
+            border: Border.all(
+              color: hovered ? p.accent : (selected ? p.accent : p.border),
+              width: selected || hovered ? 2 : 1,
+            ),
+            boxShadow: floating ? p.softShadow : null,
+          ),
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            children: [
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: PdfPageView(
+                        key: ValueKey('org_${item.uid}_${item.rotation.index}'),
+                        document: item.doc,
+                        pageNumber: item.pageNumber,
+                        rotationOverride: item.rotation,
+                        maximumDpi: 80,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(6),
+                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.25), blurRadius: 8, offset: const Offset(0, 3))],
                         ),
                       ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Rotate right',
-                  onPressed: _busy ? null : () => _rotate({item.uid}, clockwise: true),
-                  icon: const Icon(Icons.rotate_right_rounded, size: 20),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: 'More',
-                  enabled: !_busy,
-                  onSelected: (v) {
-                    switch (v) {
-                      case 'left':
-                        _rotate({item.uid}, clockwise: false);
-                      case 'dup':
-                        _duplicate(item);
-                      case 'delete':
-                        _delete({item.uid});
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(value: 'left', child: Text('Rotate left')),
-                    PopupMenuItem(value: 'dup', child: Text('Duplicate')),
-                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                    ),
+                    if (selected)
+                      Positioned(
+                        top: 4,
+                        left: 4,
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(gradient: p.accentGradient, shape: BoxShape.circle),
+                          child: Icon(Icons.check_rounded, size: 17, color: p.onAccent),
+                        ),
+                      ),
+                    if (item.fromOtherFile)
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Tooltip(
+                          message: 'From ${item.sourceName}, page ${item.pageNumber}',
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(gradient: p.accentGradient, borderRadius: BorderRadius.circular(8)),
+                            child: Text('ADDED', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: p.onAccent, letterSpacing: 0.6)),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
-                ReorderableDragStartListener(
-                  index: index,
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-                    child: Icon(Icons.drag_indicator_rounded, color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      rotatedBy == 0 ? 'Page ${index + 1}' : 'Page ${index + 1} · $rotatedBy°',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
                   ),
-                ),
-              ],
-            ),
+                  SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: PopupMenuButton<String>(
+                      tooltip: 'More',
+                      padding: EdgeInsets.zero,
+                      enabled: !_busy,
+                      icon: Icon(Icons.more_horiz_rounded, size: 20, color: p.textSecondary),
+                      onSelected: (v) {
+                        switch (v) {
+                          case 'left':
+                            _rotate({item.uid}, clockwise: false);
+                          case 'right':
+                            _rotate({item.uid}, clockwise: true);
+                          case 'dup':
+                            _duplicate(item);
+                          case 'first':
+                            _moveTo(item.uid, 0);
+                          case 'last':
+                            _moveTo(item.uid, _items.length - 1);
+                          case 'delete':
+                            _delete({item.uid});
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        _menuItem('right', Icons.rotate_right_rounded, 'Rotate right'),
+                        _menuItem('left', Icons.rotate_left_rounded, 'Rotate left'),
+                        _menuItem('dup', Icons.copy_rounded, 'Duplicate'),
+                        _menuItem('first', Icons.vertical_align_top_rounded, 'Move to start'),
+                        _menuItem('last', Icons.vertical_align_bottom_rounded, 'Move to end'),
+                        const PopupMenuDivider(),
+                        _menuItem('delete', Icons.delete_outline_rounded, 'Delete', danger: true),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ),
+        );
+
+    final tile = Pressable(
+      key: ValueKey('tap_${item.uid}'),
+      onTap: () => _toggleSelect(item.uid),
+      scale: 0.97,
+      child: card(),
+    );
+
+    // Touch: press and hold to pick a page up. Mouse: drag straight away.
+    final feedbackSize = MediaQuery.sizeOf(context).width < 500 ? 140.0 : 160.0;
+    final draggable = _dragFor(
+      uid: item.uid,
+      feedback: SizedBox(
+        width: feedbackSize,
+        height: feedbackSize / 0.66,
+        child: Material(color: Colors.transparent, child: Opacity(opacity: 0.92, child: card(floating: true))),
+      ),
+      child: tile,
+      ghost: Opacity(opacity: 0.35, child: card()),
+    );
+
+    return DragTarget<int>(
+      key: ValueKey(item.uid),
+      onWillAcceptWithDetails: (d) {
+        if (d.data == item.uid) return false;
+        setState(() => _hoverUid = item.uid);
+        return true;
+      },
+      onLeave: (_) {
+        if (_hoverUid == item.uid) setState(() => _hoverUid = null);
+      },
+      onAcceptWithDetails: (d) {
+        _moveTo(d.data, index);
+        setState(() => _hoverUid = null);
+      },
+      builder: (context, _, _) => draggable,
+    );
+  }
+
+  Widget _dragFor({
+    required int uid,
+    required Widget feedback,
+    required Widget child,
+    required Widget ghost,
+  }) {
+    void onStart() {
+      setState(() => _dragUid = uid);
+      _startAutoScroll();
+    }
+
+    if (Platform.isWindows) {
+      return Draggable<int>(
+        data: uid,
+        feedback: feedback,
+        childWhenDragging: ghost,
+        onDragStarted: onStart,
+        onDragEnd: (_) => _stopDrag(),
+        child: child,
+      );
+    }
+    return LongPressDraggable<int>(
+      data: uid,
+      feedback: feedback,
+      childWhenDragging: ghost,
+      hapticFeedbackOnStart: true,
+      delay: const Duration(milliseconds: 220),
+      onDragStarted: onStart,
+      onDragEnd: (_) => _stopDrag(),
+      child: child,
+    );
+  }
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon, String label, {bool danger = false}) {
+    final p = context.pal;
+    final color = danger ? p.danger : p.textPrimary;
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 19, color: danger ? p.danger : p.textSecondary),
+          const SizedBox(width: 12),
+          Text(label, style: TextStyle(color: color)),
+        ],
       ),
     );
   }

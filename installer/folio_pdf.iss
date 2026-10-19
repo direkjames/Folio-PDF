@@ -8,7 +8,7 @@
 ; Before each new release, bump AppVersion below (match "version:" in pubspec.yaml).
 
 #define AppName "Folio PDF"
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 #define AppPublisher "Folio PDF"
 #define AppExeName "folio_pdf.exe"
 #define BuildDir "..\build\windows\x64\runner\Release"

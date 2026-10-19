@@ -1,6 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../services/settings.dart';
+import '../design/components.dart';
 import '../theme.dart';
 import 'reading_filter.dart';
 
@@ -10,14 +12,14 @@ class ThumbnailsPanel extends StatefulWidget {
     required this.documentRef,
     required this.currentPage,
     required this.onPageSelected,
-    required this.darkReading,
+    required this.mode,
     super.key,
   });
 
   final PdfDocumentRef documentRef;
   final int currentPage;
   final ValueChanged<int> onPageSelected;
-  final bool darkReading;
+  final ReadingMode mode;
 
   @override
   State<ThumbnailsPanel> createState() => _ThumbnailsPanelState();
@@ -62,8 +64,9 @@ class _ThumbnailsPanelState extends State<ThumbnailsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final p = context.pal;
     return ColoredBox(
-      color: AppColors.surface,
+      color: p.surface,
       child: PdfDocumentViewBuilder(
         documentRef: widget.documentRef,
         builder: (context, document) {
@@ -73,36 +76,46 @@ class _ThumbnailsPanelState extends State<ThumbnailsPanel> {
           return ListView.builder(
             controller: _scroll,
             itemExtent: _itemExtent,
-            padding: const EdgeInsets.symmetric(vertical: 8),
+            padding: const EdgeInsets.symmetric(vertical: 10),
             itemCount: document.pages.length,
             itemBuilder: (context, index) {
               final pageNumber = index + 1;
               final selected = pageNumber == widget.currentPage;
               return Padding(
-                padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+                child: Pressable(
                   onTap: () => widget.onPageSelected(pageNumber),
+                  scale: 0.96,
                   child: Column(
                     children: [
                       Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.all(3),
+                        child: AnimatedContainer(
+                          duration: Dim.normal,
+                          curve: Dim.curve,
+                          padding: const EdgeInsets.all(4),
                           decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: selected ? AppColors.accent : Colors.transparent,
-                              width: 2,
-                            ),
+                            borderRadius: BorderRadius.circular(10),
+                            color: selected ? p.accent.withValues(alpha: 0.14) : Colors.transparent,
+                            border: Border.all(color: selected ? p.accent : Colors.transparent, width: 2),
                           ),
                           child: ReadingFilter(
-                            enabled: widget.darkReading,
+                            mode: widget.mode,
                             child: PdfPageView(
                               key: ValueKey('thumb_${document.hashCode}_$index'),
                               document: document,
                               pageNumber: pageNumber,
                               maximumDpi: 72,
                               alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: ReadingFilter.preFilter(Colors.black.withValues(alpha: 0.35), widget.mode),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -113,7 +126,7 @@ class _ThumbnailsPanelState extends State<ThumbnailsPanel> {
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                          color: selected ? AppColors.accent : AppColors.textSecondary,
+                          color: selected ? p.accentText : p.textSecondary,
                         ),
                       ),
                     ],

@@ -10,11 +10,21 @@ A free, ad-free PDF viewer (and soon editor) for **Android** and **Windows**, bu
 - Find in document with match count and next/previous
 - Dark pages toggle (inverts the PDF for night reading; remembered between sessions)
 - Recent files list that reopens each file on the page you left off
-- Dark UI with `#FFE566` accent throughout
+- Premium design: layered dark theme, warm gold accent, light theme, bundled Inter and Fraunces fonts, frosted-glass bars
+
+## Design (v0.2)
+
+- **Themes:** System, Light or Dark (Settings), warm gold accent in both
+- **Home:** open card (drag and drop a PDF onto the window on Windows), "Continue reading" card, recent files with real first-page covers and progress
+- **Viewer:** floating glass top bar and bottom dock, bars hide while reading on phones (tap the page to bring them back), reading progress line, paper-style pages
+- **Page style:** Normal, Sepia or Dark pages (remembered between sessions)
+- **Organize:** grid of page cards, drag to reorder (press and hold on phones), floating action bar for selected pages
+- **Windows:** custom title bar that matches the theme, warning if you close the window with unsaved changes
+- **Android:** edge-to-edge, branded splash screen
 
 ## Phase 2 features (editing, part 1)
 
-- **Organize pages** (grid icon in the viewer): drag to reorder, rotate, delete, duplicate, undo
+- **Organize pages** (grid icon in the viewer): drag to reorder, move to start/end, rotate, delete, duplicate, undo
 - **Merge:** "Add PDF" in Organize appends pages from one or more other PDFs
 - **Split / extract:** select pages and save them as a new PDF
 - **Save** (`Ctrl+S`) and **Save as** (`Ctrl+Shift+S`), with a warning if you leave with unsaved changes
@@ -73,16 +83,19 @@ dart run flutter_launcher_icons
 ## Renaming the app
 
 - Android launcher name: `android:label` in `android/app/src/main/AndroidManifest.xml`
-- Windows window title: `windows/runner/main.cpp` (the `window.Create(L"folio_pdf", ...)` line)
+- Windows window title: `windows/runner/main.cpp` (the `window.Create(L"Folio PDF", ...)` line) and `title` in `lib/widgets/window_frame.dart`
 - App icon: the easiest route is the `flutter_launcher_icons` package
 
 ## Project structure
 
 ```
 lib/
-  main.dart                    App entry, dark theme
-  theme.dart                   Colors (accent #FFE566) and Material theme
-  screens/home_screen.dart     Open button + recent files
+  main.dart                    App entry, theme mode, Windows title bar
+  theme.dart                   Material theme (light + dark) built from the palette
+  design/palette.dart          Colors, spacing, radii, motion (FolioPalette, Dim)
+  design/components.dart       Shared UI: glass panel, gold button, cards, toasts, sheets
+  screens/home_screen.dart     Open card, continue reading, recent files
+  screens/settings_screen.dart Theme and page style
   screens/viewer_screen.dart   Viewer, toolbar, zoom pill, shortcuts, save
   screens/organize_screen.dart Reorder/rotate/delete/merge/extract pages
   services/pdf_saver.dart      Save, Save as, share/export
@@ -90,7 +103,10 @@ lib/
   services/file_opener.dart    File picker
   widgets/thumbnails_panel.dart
   widgets/search_bar.dart
-  widgets/reading_filter.dart  Dark pages color inversion
+  services/settings.dart       Theme and page style preferences
+  widgets/reading_filter.dart  Normal / sepia / dark page tint
+  widgets/pdf_cover.dart       First-page preview for recent files
+  widgets/window_frame.dart    Custom Windows title bar
   widgets/password_dialog.dart
 ```
 
@@ -101,3 +117,7 @@ These need PDFium's lower-level API (available through the `pdfium_dart` binding
 - **Form filling:** PDFium's form functions (`FORM_*`, `FPDFAnnot_SetStringValue`)
 - **Signatures:** a drawn or imported signature image stamped onto the page (visual signature, not a certificate-based digital signature)
 
+
+## Fonts
+
+Inter and Fraunces are bundled in `assets/fonts/` (SIL Open Font License 1.1, see `assets/fonts/OFL.txt`).
