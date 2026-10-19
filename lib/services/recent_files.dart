@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -21,8 +22,6 @@ class RecentFile {
   /// Page the user was on when they closed the file, so it reopens there.
   final int lastPage;
   final int? pageCount;
-
-  bool get exists => File(path).existsSync();
 
   RecentFile copyWith({DateTime? lastOpened, int? lastPage, int? pageCount}) => RecentFile(
         path: path,
@@ -66,6 +65,30 @@ class RecentFilesStore extends ChangeNotifier {
   List<RecentFile> _files = [];
   List<RecentFile> get files => List.unmodifiable(_files);
 
+  // Which files are gone from disk. Checked off the UI thread and cached, so
+  // building the list never touches the file system.
+  final _missing = <String>{};
+  bool isMissing(String path) => _missing.contains(path);
+
+  Timer? _saveTimer;
+
+  /// Re-checks every recent file against the disk.
+  Future<void> refreshAvailability() async {
+    final missing = <String>{};
+    for (final f in List.of(_files)) {
+      try {
+        if (!await File(f.path).exists()) missing.add(f.path);
+      } catch (_) {
+        missing.add(f.path);
+      }
+    }
+    if (setEquals(missing, _missing)) return;
+    _missing
+      ..clear()
+      ..addAll(missing);
+    notifyListeners();
+  }
+
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_key);
@@ -81,6 +104,7 @@ class RecentFilesStore extends ChangeNotifier {
       _files = [];
     }
     notifyListeners();
+    unawaited(refreshAvailability());
   }
 
   RecentFile? find(String path) {
@@ -108,22 +132,38 @@ class RecentFilesStore extends ChangeNotifier {
     final i = _files.indexWhere((f) => f.path == path);
     if (i < 0) return;
     _files[i] = _files[i].copyWith(lastPage: lastPage, pageCount: pageCount);
-    await _save();
+    // Page changes come in rapidly while scrolling: write to disk once things settle.
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 700), _save);
+  }
+
+  /// Writes any pending reading position right away (e.g. when leaving the viewer).
+  Future<void> flush() async {
+    if (_saveTimer?.isActive ?? false) {
+      _saveTimer!.cancel();
+      await _save();
+    }
   }
 
   Future<void> remove(String path) async {
     _files.removeWhere((f) => f.path == path);
+    _missing.remove(path);
     await _save();
   }
 
   Future<void> clear() async {
     _files = [];
+    _missing.clear();
     await _save();
   }
 
   Future<void> _save() async {
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, jsonEncode(_files.map((f) => f.toJson()).toList()));
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_key, jsonEncode(_files.map((f) => f.toJson()).toList()));
+    } catch (_) {
+      // Losing the recent list is better than crashing.
+    }
   }
 }

@@ -1,7 +1,7 @@
 name: folio_pdf
 description: "Folio PDF - a free, ad-free PDF viewer and editor for Android and Windows."
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ^3.13.0
@@ -20,6 +20,8 @@ dependencies:
   shared_preferences: ^2.5.0
   # Android: export/share saved PDFs (Android apps can't write anywhere they like)
   share_plus: ^13.1.0
+  window_manager: ^0.5.2
+  desktop_drop: ^0.8.4
 
 dev_dependencies:
   flutter_test:
@@ -30,12 +32,31 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/fonts/OFL.txt
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.ttf
+          weight: 700
+    - family: Fraunces
+      fonts:
+        - asset: assets/fonts/Fraunces-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Fraunces-SemiBold.ttf
+          weight: 600
 
 flutter_launcher_icons:
   image_path: "assets/icon/app_icon.png"
   android: true
   # Android adaptive icon: the PDF icon on the app's dark background
-  adaptive_icon_background: "#121212"
+  adaptive_icon_background: "#0C0C0F"
   adaptive_icon_foreground: "assets/icon/app_icon.png"
   adaptive_icon_foreground_inset: 12
   min_sdk_android: 21

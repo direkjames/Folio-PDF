@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../design/components.dart';
 import '../theme.dart';
 
 /// Find-in-document bar shown under the app bar.
@@ -59,14 +60,16 @@ class _PdfSearchBarState extends State<PdfSearchBar> {
       status = '${(s.currentIndex ?? 0) + 1} / $count${s.isSearching ? '+' : ''}';
     }
 
-    return Material(
-      color: AppColors.surface,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
-            child: CallbackShortcuts(
+    final p = context.pal;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 560),
+      child: GlassPanel(
+        borderRadius: BorderRadius.circular(22),
+        padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CallbackShortcuts(
               bindings: {
                 const SingleActivator(LogicalKeyboardKey.escape): widget.onClose,
                 const SingleActivator(LogicalKeyboardKey.enter, shift: true): _prev,
@@ -94,39 +97,39 @@ class _PdfSearchBarState extends State<PdfSearchBar> {
                       },
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   ConstrainedBox(
-                    constraints: const BoxConstraints(minWidth: 64),
+                    constraints: const BoxConstraints(minWidth: 56),
                     child: Text(
                       status,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                      style: TextStyle(color: p.textSecondary, fontSize: 13, fontWeight: FontWeight.w600),
                     ),
                   ),
-                  IconButton(
+                  FolioIconButton(
                     tooltip: 'Previous (Shift+Enter)',
                     onPressed: count > 0 ? _prev : null,
-                    icon: const Icon(Icons.keyboard_arrow_up_rounded),
+                    icon: Icons.keyboard_arrow_up_rounded,
                   ),
-                  IconButton(
+                  FolioIconButton(
                     tooltip: 'Next (Enter)',
                     onPressed: count > 0 ? _next : null,
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                    icon: Icons.keyboard_arrow_down_rounded,
                   ),
-                  IconButton(
+                  FolioIconButton(
                     tooltip: 'Close (Esc)',
                     onPressed: widget.onClose,
-                    icon: const Icon(Icons.close_rounded),
+                    icon: Icons.close_rounded,
                   ),
                 ],
               ),
             ),
-          ),
-          SizedBox(
-            height: 2,
-            child: s.isSearching ? LinearProgressIndicator(value: s.searchProgress, minHeight: 2) : null,
-          ),
-        ],
+            SizedBox(
+              height: 2,
+              child: s.isSearching ? LinearProgressIndicator(value: s.searchProgress, minHeight: 2) : null,
+            ),
+          ],
+        ),
       ),
     );
   }
