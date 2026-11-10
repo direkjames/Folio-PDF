@@ -26,7 +26,7 @@ flutter create --platforms=android,windows --org com.folio --project-name folio_
 
 ## Building to share
 
-See [BUILDING.md](../BUILDING.md) for the Windows installer, the signed Android APK and the release checklist. The Windows build can fail on very long paths or under a Temp folder, so build from a short path such as `C:Users<you>olio`.
+See [BUILDING.md](../BUILDING.md) for the Windows installer, the signed Android APK and the release checklist. The Windows build can fail on very long paths or under a Temp folder, so build from a short path such as `C:\Users\<you>\folio`.
 
 ## App icon
 
