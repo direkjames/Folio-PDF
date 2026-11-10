@@ -26,17 +26,7 @@ flutter create --platforms=android,windows --org com.folio --project-name folio_
 
 ## Building to share
 
-**Android APK**
-```
-flutter build apk --release
-```
-Output: `build/app/outputs/flutter-apk/app-release.apk`. By default Flutter signs release builds with your machine's debug key. If you build from a different computer, people will have to uninstall before they can update, so create your own signing key once and keep it safe: https://docs.flutter.dev/deployment/android#sign-the-app
-
-**Windows**
-```
-flutter build windows --release
-```
-Output: `build\windows\x64\runner\Release\`. Zip that **whole folder**, because the `.exe` needs the DLLs and the `data` folder next to it. The Inno Setup script for the installer is in `installer/`. The build can fail on very long paths or under a Temp folder, so build from a short path such as `C:\Users\<you>\folio`.
+See [BUILDING.md](../BUILDING.md) for the Windows installer, the signed Android APK and the release checklist. The Windows build can fail on very long paths or under a Temp folder, so build from a short path such as `C:Users<you>olio`.
 
 ## App icon
 
